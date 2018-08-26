@@ -1,21 +1,30 @@
 package main
 
 import (
+	"fmt"
+	"log"
+	"net/http"
+	"os"
 	"path"
 	"path/filepath"
 
+	"github.com/auth0-community/go-auth0"
 	"github.com/gin-gonic/gin"
 	"github.com/maxproske/L44/handlers"
+	jose "gopkg.in/square/go-jose.v2"
+)
+
+var (
+	audience string
+	domain   string
 )
 
 func main() {
-	// Create Gin server
+	setAuth0Variables()
 	r := gin.Default()
 
-	// Routing in Gin is specific and the root path cannot be ambiguous
-	// (/* would precedence over every other route in your web server)
+	// This will ensure that the angular files are served correctly
 	r.NoRoute(func(c *gin.Context) {
-		// Assume that this call is asking for a file and attempt to find this file
 		dir, file := path.Split(c.Request.RequestURI)
 		ext := filepath.Ext(file)
 		if file == "" || ext == "" {
@@ -25,14 +34,50 @@ func main() {
 		}
 	})
 
-	r.GET("/todo", handlers.GetTodoListHandler)
-	r.POST("/todo", handlers.AddTodoHandler)
-	r.DELETE("/todo/:id", handlers.DeleteTodoHandler)
-	r.PUT("/todo", handlers.CompleteTodoHandler)
+	authorized := r.Group("/")
+	authorized.Use(authRequired())
+	authorized.GET("/todo", handlers.GetTodoListHandler)
+	authorized.POST("/todo", handlers.AddTodoHandler)
+	authorized.DELETE("/todo/:id", handlers.DeleteTodoHandler)
+	authorized.PUT("/todo", handlers.CompleteTodoHandler)
 
-	// Run web server on port 3000
 	err := r.Run(":3000")
 	if err != nil {
 		panic(err)
 	}
+}
+
+func setAuth0Variables() {
+	audience = os.Getenv("AUTH0_API_IDENTIFIER")
+	fmt.Println("audience:", audience)
+
+	domain = os.Getenv("AUTH0_DOMAIN")
+	fmt.Println("domain:", domain)
+
+}
+
+// ValidateRequest will verify that a token received from an http request
+// is valid and signyed by Auth0
+func authRequired() gin.HandlerFunc {
+	return func(c *gin.Context) {
+
+		var auth0Domain = "https://" + domain + "/"
+		client := auth0.NewJWKClient(auth0.JWKClientOptions{URI: auth0Domain + ".well-known/jwks.json"}, nil)
+		configuration := auth0.NewConfiguration(client, []string{audience}, auth0Domain, jose.RS256)
+		validator := auth0.NewValidator(configuration, nil)
+
+		_, err := validator.ValidateRequest(c.Request)
+
+		if err != nil {
+			log.Println(err)
+			terminateWithError(http.StatusUnauthorized, "token is not valid", c)
+			return
+		}
+		c.Next()
+	}
+}
+
+func terminateWithError(statusCode int, message string, c *gin.Context) {
+	c.JSON(statusCode, gin.H{"error": message})
+	c.Abort()
 }
